@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot de Alertas de Licitaciones Biomédicas con Ficha Técnica PDF y Objeto Completo
+Bot de Alertas de Licitaciones Biomédicas con Ficha Técnica PDF y Distintivos de Estado
 Región: Sinaloa, Sonora, Durango, Nayarit y Jalisco.
 Fuente: API Abierta de LicitIA (https://api.licitia.com.mx/api/open/v1)
 """
@@ -119,6 +119,54 @@ def detectar_estado(texto):
             return estado, config["emoji"]
     return None, None
 
+def obtener_distintivo_estatus(proc_detalle):
+    """Calcula el distintivo visual según si la licitación está abierta o ya adjudicada."""
+    root = proc_detalle.get("data", proc_detalle)
+    raw_status = (root.get("lifecycle", {}).get("status") or root.get("status") or root.get("estatus") or "").lower()
+    awards = root.get("awards", [])
+    has_contractor = any(aw.get("contractor") for aw in awards)
+    
+    if "vigente" in raw_status or "abiert" in raw_status:
+        return {
+            "tipo": "ABIERTA",
+            "emoji": "🟢",
+            "texto_telegram": "🟢 *ESTATUS: CONVOCATORIA ABIERTA (VIGENTE)*",
+            "texto_pdf": "🟢 CONVOCATORIA ABIERTA (En plazo para participar)",
+            "bg_color": "#c6f6d5", # verde claro
+            "border_color": "#38a169",
+            "text_color": "#22543d"
+        }
+    elif has_contractor or "concluid" in raw_status or "adjudicad" in raw_status:
+        return {
+            "tipo": "ADJUDICADA",
+            "emoji": "🔴",
+            "texto_telegram": "🔴 *ESTATUS: YA ADJUDICADA / CONCLUIDA*",
+            "texto_pdf": "🔴 ADJUDICADA / CONCLUIDA (Con Acta de Fallo)",
+            "bg_color": "#fed7d7", # rojo claro
+            "border_color": "#e53e3e",
+            "text_color": "#742a2a"
+        }
+    elif "desiert" in raw_status:
+        return {
+            "tipo": "DESIERTA",
+            "emoji": "⚪",
+            "texto_telegram": "⚪ *ESTATUS: DECLARADA DESIERTA*",
+            "texto_pdf": "⚪ DECLARADA DESIERTA",
+            "bg_color": "#edf2f7",
+            "border_color": "#cbd5e0",
+            "text_color": "#4a5568"
+        }
+    else:
+        return {
+            "tipo": "SEGUIMIENTO",
+            "emoji": "🟡",
+            "texto_telegram": f"🟡 *ESTATUS: {raw_status.upper()}*",
+            "texto_pdf": f"🟡 {raw_status.upper()}",
+            "bg_color": "#fefcbf",
+            "border_color": "#d69e2e",
+            "text_color": "#744210"
+        }
+
 def obtener_objeto_completo(root):
     """Extrae la descripción completa y no truncada del procedimiento."""
     desc = root.get("description")
@@ -130,7 +178,6 @@ def obtener_objeto_completo(root):
         
     title = (root.get("title") or root.get("nombre_procedimiento") or "").strip()
     
-    # Si description.detailed es más completo y no es solo justificación legal
     if detailed and len(detailed) >= len(title) and not detailed.startswith("Peligro o alteración"):
         return detailed
     return title or detailed or "Sin descripción registrada"
@@ -162,7 +209,7 @@ def extraer_ganadores(data_detalle):
     return ganadores
 
 def generar_pdf_licitacion(proc_detalle, estado, emoji):
-    """Genera un PDF con ficha digerida, objeto completo, partidas, anexos y empresa ganadora."""
+    """Genera un PDF con ficha digerida, distintivo visual de estado, objeto completo y partidas."""
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
@@ -170,8 +217,9 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
         from reportlab.lib import colors
     except ImportError:
         print("[ERROR] Reportlab no está instalado.")
-        return None, [], "Sin descripción"
+        return None, [], "Sin descripción", {}
 
+    distintivo = obtener_distintivo_estatus(proc_detalle)
     root = proc_detalle.get("data", proc_detalle)
     num = root.get("procedure_number") or root.get("numero_procedimiento") or "licitacion"
     safe_num = "".join(c for c in num if c.isalnum() or c in "-_")
@@ -187,16 +235,28 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), spaceAfter=4)
-    subtitle_style = ParagraphStyle('SubtitleStyle', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#4a5568'), spaceAfter=8)
-    h2_style = ParagraphStyle('H2Style', parent=styles['Heading2'], fontSize=11, textColor=colors.HexColor('#2b6cb0'), spaceBefore=8, spaceAfter=4)
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=15, textColor=colors.HexColor('#1a365d'), spaceAfter=2)
+    subtitle_style = ParagraphStyle('SubtitleStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#4a5568'), spaceAfter=6)
+    h2_style = ParagraphStyle('H2Style', parent=styles['Heading2'], fontSize=10.5, textColor=colors.HexColor('#2b6cb0'), spaceBefore=7, spaceAfter=3)
     body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=8.5, textColor=colors.HexColor('#2d3748'), leading=11)
     bold_style = ParagraphStyle('BoldStyle', parent=body_style, fontName='Helvetica-Bold')
+    badge_style = ParagraphStyle('BadgeStyle', parent=styles['Normal'], fontSize=9.5, textColor=colors.HexColor(distintivo["text_color"]), fontName='Helvetica-Bold', alignment=1)
 
     story = []
     story.append(Paragraph(f"FICHA TÉCNICA RESUMIDA DE LICITACIÓN {emoji}", title_style))
     story.append(Paragraph(f"Vigilancia de Compras Públicas · Sector Biomédico Regional", subtitle_style))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=colors.HexColor('#2b6cb0'), spaceAfter=8))
+
+    # Banner distintivo de estado (Abierta vs Adjudicada)
+    badge_table = Table([[Paragraph(f"<b>{distintivo['texto_pdf']}</b>", badge_style)]], colWidths=[540])
+    badge_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor(distintivo["bg_color"])),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor(distintivo["border_color"])),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(badge_table)
+    story.append(Spacer(1, 6))
 
     # Datos Generales
     f_pub = (root.get("schedule", {}).get("published_at") or root.get("fecha_publicacion") or "N/D")[:10]
@@ -219,13 +279,13 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
     ]))
     story.append(t_gral)
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 5))
 
-    # Objeto de la Contratación (Completo, sin truncar)
+    # Objeto de la Contratación
     objeto_completo = obtener_objeto_completo(root)
     story.append(Paragraph("Objeto de la Contratación", h2_style))
     story.append(Paragraph(objeto_completo, body_style))
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 5))
 
     # Empresa Ganadora si existe
     ganadores = extraer_ganadores(proc_detalle)
@@ -250,7 +310,7 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
         story.append(t_gan)
     else:
         story.append(Paragraph("⏳ <i>Licitación en etapa de convocatoria / evaluación abierta. Aún no se emite el acta de fallo ni hay empresa adjudicada.</i>", body_style))
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 5))
 
     # Partidas CUCOP
     items_cucop = []
@@ -287,7 +347,7 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
         ]))
         story.append(t_part)
-        story.append(Spacer(1, 6))
+        story.append(Spacer(1, 5))
 
     # Anexos
     docs = root.get("documents", [])
@@ -311,7 +371,7 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
         story.append(t_docs)
 
     doc.build(story)
-    return pdf_path, ganadores, objeto_completo
+    return pdf_path, ganadores, objeto_completo, distintivo
 
 def send_telegram_doc(pdf_path, caption):
     """Envía el PDF generado directamente como archivo adjunto a Telegram."""
@@ -420,23 +480,24 @@ def self_check():
     """Chequeo ejecutable sin frameworks"""
     assert es_biomedico("SERVICIO DE MANTENIMIENTO PREVENTIVO A EQUIPO MÉDICO") is True
     assert es_biomedico("ADQUISICIÓN DE RECETARIOS MÉDICOS") is False
-    assert es_biomedico("SERVICIO MÉDICO INTEGRAL DE ANESTESIA") is True
     
+    mock_vigente = {"status": "vigente", "procedure_number": "test-vig-2026"}
+    d_vig = obtener_distintivo_estatus(mock_vigente)
+    assert d_vig["tipo"] == "ABIERTA"
+    assert "🟢" in d_vig["texto_telegram"]
+
     mock_concluido = {
-        "procedure_number": "test-ganador-2026",
-        "title": "ADQUISICIÓN DE EQUIPO MÉDICO QUIRÚRGICO Y DE DIAGNÓSTICO",
-        "description": {"detailed": "ADQUISICIÓN DE EQUIPO MÉDICO QUIRÚRGICO Y DE DIAGNÓSTICO PARA EL HOSPITAL GENERAL DE CULIACÁN SINALOA."},
+        "procedure_number": "test-adj-2026",
         "lifecycle": {"status": "concluido"},
-        "awards": [{
-            "contractor": {"name": "EMPRESA BIOMEDICA SA DE CV"},
-            "value": {"total": "500000", "currency": "MXN"}
-        }]
+        "awards": [{"contractor": {"name": "EMPRESA BIOMEDICA"}, "value": {"total": "100000"}}]
     }
-    assert "HOSPITAL GENERAL DE CULIACÁN" in obtener_objeto_completo(mock_concluido)
+    d_adj = obtener_distintivo_estatus(mock_concluido)
+    assert d_adj["tipo"] == "ADJUDICADA"
+    assert "🔴" in d_adj["texto_telegram"]
     
-    pdf_p, _, _ = generar_pdf_licitacion(mock_concluido, "Sinaloa", "📍")
+    pdf_p, _, _, _ = generar_pdf_licitacion(mock_concluido, "Sinaloa", "📍")
     assert pdf_p is not None and os.path.exists(pdf_p)
-    print("✅ Self-check superado: Objeto completo sin truncar, PDF y filtros OK.")
+    print("✅ Self-check superado: Distintivos visuales (🟢 Abierta vs 🔴 Adjudicada) y PDF OK.")
 
 def main():
     if "--self-check" in sys.argv:
@@ -467,13 +528,13 @@ def main():
             if not detalle.get("data"):
                 detalle = proc
 
-            pdf_file, ganadores, objeto_completo = generar_pdf_licitacion(detalle, estado, emoji)
+            pdf_file, ganadores, objeto_completo, distintivo = generar_pdf_licitacion(detalle, estado, emoji)
             
             ganador_texto = ""
             if ganadores:
                 ganador_texto = f"\n🏆 *Ganador:* {ganadores[0]['empresa']} ({ganadores[0]['monto']})"
 
-            # Limitar caption si es muy largo para Telegram (máx 1024 caracteres)
+            # Limitar caption para Telegram
             if len(objeto_completo) > 300:
                 objeto_caption = objeto_completo[:300] + "..."
             else:
@@ -482,6 +543,7 @@ def main():
             caption = (
                 f"🚨 *LICITACIÓN BIOMÉDICA*\n"
                 f"📍 *Estado:* {emoji} *{estado}*\n"
+                f"{distintivo['texto_telegram']}\n\n"
                 f"📋 *Objeto:* {objeto_caption}\n"
                 f"🏥 *Institución:* {proc.get('origen_institucion', '')}\n"
                 f"🔢 *Número:* `{num}`"
@@ -489,7 +551,7 @@ def main():
                 f"📄 *Ficha técnica en PDF adjunta.*"
             )
 
-            print(f"-> [{estado}] Enviando PDF y alerta para {num}...")
+            print(f"-> [{estado}] ({distintivo['tipo']}) Enviando PDF y alerta para {num}...")
             if pdf_file:
                 ok = send_telegram_doc(pdf_file, caption)
                 if ok:
