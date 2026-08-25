@@ -1,0 +1,42 @@
+name: Monitoreo Regional Licitaciones (Sinaloa y Vecinos)
+
+on:
+  schedule:
+    # Se ejecuta todos los días a las 14:00 UTC (07:00 AM hora Sinaloa / 08:00 AM CDMX)
+    - cron: '0 14 * * *'
+  workflow_dispatch: # Permite ejecutar el bot manualmente desde GitHub con un clic
+
+permissions:
+  contents: write
+
+jobs:
+  monitorear:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias para PDF
+        run: |
+          pip install reportlab
+
+      - name: Ejecutar Bot de Licitaciones
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || '8506045479:AAENIrk96tSSXYFRIhFtuZbwrHxzdnHmk-U' }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '1344870675' }}
+        run: |
+          python bot_licitaciones.py
+
+      - name: Guardar caché de notificaciones
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add notified_ids.json
+          git commit -m "chore: actualizar cache de licitaciones notificados" || echo "Sin cambios en el cache"
+          git push || echo "No se requirió push"
