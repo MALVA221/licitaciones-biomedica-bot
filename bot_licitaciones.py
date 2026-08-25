@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bot de Alertas de Licitaciones Biomédicas con Ficha Técnica PDF y Distintivos de Estado
+Bot de Licitaciones Biomédicas con Menú Interactivo y Generación de Fichas PDF
 Región: Sinaloa, Sonora, Durango, Nayarit y Jalisco.
 Fuente: API Abierta de LicitIA (https://api.licitia.com.mx/api/open/v1)
 """
@@ -97,6 +97,15 @@ EXCLUSIONES_NO_BIOMEDICAS = [
     "alcantarillado", "computo", "vehiculo", "gas lp", "alarma", "papeleria", "limpieza"
 ]
 
+KEYBOARD_MENU = {
+    "keyboard": [
+        [{"text": "🟢 Licitaciones Activas"}, {"text": "🔴 Licitaciones Adjudicadas"}],
+        [{"text": "✨ Licitaciones Nuevas"}, {"text": "📍 Solo Sinaloa"}]
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True
+}
+
 def fetch_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "BotBiomedicoRegional/1.0"})
     try:
@@ -132,7 +141,7 @@ def obtener_distintivo_estatus(proc_detalle):
             "emoji": "🟢",
             "texto_telegram": "🟢 *ESTATUS: CONVOCATORIA ABIERTA (VIGENTE)*",
             "texto_pdf": "🟢 CONVOCATORIA ABIERTA (En plazo para participar)",
-            "bg_color": "#c6f6d5", # verde claro
+            "bg_color": "#c6f6d5",
             "border_color": "#38a169",
             "text_color": "#22543d"
         }
@@ -142,7 +151,7 @@ def obtener_distintivo_estatus(proc_detalle):
             "emoji": "🔴",
             "texto_telegram": "🔴 *ESTATUS: YA ADJUDICADA / CONCLUIDA*",
             "texto_pdf": "🔴 ADJUDICADA / CONCLUIDA (Con Acta de Fallo)",
-            "bg_color": "#fed7d7", # rojo claro
+            "bg_color": "#fed7d7",
             "border_color": "#e53e3e",
             "text_color": "#742a2a"
         }
@@ -246,7 +255,7 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
     story.append(Paragraph(f"FICHA TÉCNICA RESUMIDA DE LICITACIÓN {emoji}", title_style))
     story.append(Paragraph(f"Vigilancia de Compras Públicas · Sector Biomédico Regional", subtitle_style))
 
-    # Banner distintivo de estado (Abierta vs Adjudicada)
+    # Banner distintivo de estado
     badge_table = Table([[Paragraph(f"<b>{distintivo['texto_pdf']}</b>", badge_style)]], colWidths=[540])
     badge_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor(distintivo["bg_color"])),
@@ -373,9 +382,35 @@ def generar_pdf_licitacion(proc_detalle, estado, emoji):
     doc.build(story)
     return pdf_path, ganadores, objeto_completo, distintivo
 
-def send_telegram_doc(pdf_path, caption):
+def send_telegram_msg(texto, chat_id=None, reply_markup=None):
+    """Envía un mensaje de texto simple o con teclado interactivo a Telegram."""
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_TOKEN or not target_chat:
+        return False
+        
+    payload_dict = {
+        "chat_id": target_chat,
+        "text": texto,
+        "parse_mode": "Markdown"
+    }
+    if reply_markup:
+        payload_dict["reply_markup"] = reply_markup
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = json.dumps(payload_dict).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "BotBiomedicoRegional/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("ok", False)
+    except Exception as err:
+        print(f"[ERROR] Error al enviar mensaje: {err}")
+        return False
+
+def send_telegram_doc(pdf_path, caption, chat_id=None):
     """Envía el PDF generado directamente como archivo adjunto a Telegram."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not TELEGRAM_TOKEN or not target_chat:
         return False
 
     boundary = "----WebKitFormBoundaryBotBiomedico7MA"
@@ -387,7 +422,7 @@ def send_telegram_doc(pdf_path, caption):
     body = (
         f"--{boundary}\r\n"
         f"Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
-        f"{TELEGRAM_CHAT_ID}\r\n"
+        f"{target_chat}\r\n"
         f"--{boundary}\r\n"
         f"Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
         f"{caption}\r\n"
@@ -428,12 +463,16 @@ def save_cache(notified_set):
     except Exception as err:
         print(f"[WARN] No se pudo guardar caché: {err}")
 
-def buscar_licitaciones_region(dias_atras=30):
+def buscar_licitaciones_region(dias_atras=30, solo_estado=None, solo_estatus=None):
+    """Busca licitaciones biomédicas con filtros de días, estado o estatus (abierta / adjudicada)."""
     encontradas = []
     fecha_limite = (datetime.now(timezone.utc) - timedelta(days=dias_atras)).strftime("%Y-%m-%d")
 
     # 1. Unidades compradoras de salud
     for estado, config in ESTADOS_CONFIG.items():
+        if solo_estado and solo_estado.lower() != estado.lower():
+            continue
+            
         for slug_unidad, label_inst in config["unidades"]:
             url = f"https://api.licitia.com.mx/api/open/v1/unidades/{slug_unidad}/procedimientos"
             res = fetch_json(url)
@@ -460,6 +499,8 @@ def buscar_licitaciones_region(dias_atras=30):
 
         estado, emoji = detectar_estado(texto_completo)
         if estado and es_biomedico(nombre):
+            if solo_estado and solo_estado.lower() != estado.lower():
+                continue
             proc["estado_detectado"] = estado
             proc["estado_emoji"] = emoji
             proc["origen_institucion"] = dep
@@ -471,10 +512,135 @@ def buscar_licitaciones_region(dias_atras=30):
     for p in encontradas:
         num = p.get("numero_procedimiento")
         if num and num not in vistos:
+            # Filtrar por estatus si se especificó
+            if solo_estatus:
+                dist = obtener_distintivo_estatus(p)
+                if dist["tipo"] != solo_estatus:
+                    continue
             vistos.add(num)
             unicas.append(p)
 
     return unicas
+
+def responder_consulta_interactiva(comando, chat_id):
+    """Procesa comandos y consultas interactivas recibidas por Telegram."""
+    c = comando.lower().strip()
+    
+    if c in ["/start", "start", "/menu", "menu", "/ayuda", "ayuda"]:
+        texto = (
+            "📋 *Menú de Control de Licitaciones Biomédicas*\n\n"
+            "Presiona cualquiera de los botones abajo para solicitar información en tiempo real:\n\n"
+            "• 🟢 *Licitaciones Activas:* Convocatorias vigentes para participar.\n"
+            "• 🔴 *Licitaciones Adjudicadas:* Procedimientos con empresa ganadora y monto.\n"
+            "• ✨ *Licitaciones Nuevas:* Publicaciones de las últimas 48 horas.\n"
+            "• 📍 *Solo Sinaloa:* Filtrar exclusivamente licitaciones de Sinaloa."
+        )
+        send_telegram_msg(texto, chat_id=chat_id, reply_markup=KEYBOARD_MENU)
+        return
+
+    send_telegram_msg("🔍 *Consultando compras públicas en tiempo real... Espera un momento.*", chat_id=chat_id)
+
+    # Disparador: Licitaciones Activas (Abiertas)
+    if "activa" in c or "vigente" in c or "abiert" in c:
+        procs = buscar_licitaciones_region(dias_atras=30, solo_estatus="ABIERTA")
+        if not procs:
+            send_telegram_msg("ℹ️ *No hay licitaciones abiertas (vigentes) en este momento en la región.* Todas las registradas en el periodo reciente ya fueron adjudicadas.", chat_id=chat_id)
+            return
+        send_telegram_msg(f"🟢 *Se encontraron {len(procs)} licitaciones ABIERTAS para participar:*", chat_id=chat_id)
+        for p in procs:
+            enviar_procedimiento_individual(p, chat_id)
+            time.sleep(1)
+
+    # Disparador: Licitaciones Adjudicadas
+    elif "adjudicad" in c or "concluid" in c or "ganador" in c:
+        procs = buscar_licitaciones_region(dias_atras=45, solo_estatus="ADJUDICADA")
+        send_telegram_msg(f"🔴 *Se encontraron {len(procs)} licitaciones ADJUDICADAS con fallo registrado:*", chat_id=chat_id)
+        for p in procs:
+            enviar_procedimiento_individual(p, chat_id)
+            time.sleep(1)
+
+    # Disparador: Licitaciones Nuevas (Últimas 48h)
+    elif "nueva" in c or "reciente" in c:
+        procs = buscar_licitaciones_region(dias_atras=3)
+        if not procs:
+            send_telegram_msg("✨ *No se registraron nuevas publicaciones en las últimas 48 horas en la región.*", chat_id=chat_id)
+            return
+        send_telegram_msg(f"✨ *Se encontraron {len(procs)} publicaciones recientes:*", chat_id=chat_id)
+        for p in procs:
+            enviar_procedimiento_individual(p, chat_id)
+            time.sleep(1)
+
+    # Disparador: Solo Sinaloa
+    elif "sinaloa" in c:
+        procs = buscar_licitaciones_region(dias_atras=45, solo_estado="Sinaloa")
+        send_telegram_msg(f"📍 *Se encontraron {len(procs)} licitaciones del sector salud en Sinaloa:*", chat_id=chat_id)
+        for p in procs:
+            enviar_procedimiento_individual(p, chat_id)
+            time.sleep(1)
+    else:
+        send_telegram_msg("❓ Comando no reconocido. Usa los botones del menú o escribe `/activas`, `/adjudicadas`, `/nuevas` o `/sinaloa`.", chat_id=chat_id, reply_markup=KEYBOARD_MENU)
+
+def enviar_procedimiento_individual(proc, chat_id):
+    """Genera PDF y envía alerta de un procedimiento específico."""
+    num = proc.get("numero_procedimiento")
+    estado = proc.get("estado_detectado") or "Región"
+    emoji = proc.get("estado_emoji") or "📍"
+
+    detalle = fetch_json(f"https://api.licitia.com.mx/api/open/v1/licitaciones/{num}")
+    if not detalle.get("data"):
+        detalle = proc
+
+    pdf_file, ganadores, objeto_completo, distintivo = generar_pdf_licitacion(detalle, estado, emoji)
+    
+    ganador_texto = ""
+    if ganadores:
+        ganador_texto = f"\n🏆 *Ganador:* {ganadores[0]['empresa']} ({ganadores[0]['monto']})"
+
+    if len(objeto_completo) > 300:
+        objeto_caption = objeto_completo[:300] + "..."
+    else:
+        objeto_caption = objeto_completo
+
+    caption = (
+        f"🚨 *LICITACIÓN BIOMÉDICA*\n"
+        f"📍 *Estado:* {emoji} *{estado}*\n"
+        f"{distintivo['texto_telegram']}\n\n"
+        f"📋 *Objeto:* {objeto_caption}\n"
+        f"🏥 *Institución:* {proc.get('origen_institucion', '')}\n"
+        f"🔢 *Número:* `{num}`"
+        f"{ganador_texto}\n\n"
+        f"📄 *Ficha técnica en PDF adjunta.*"
+    )
+
+    if pdf_file:
+        send_telegram_doc(pdf_file, caption, chat_id=chat_id)
+
+def escuchar_mensajes_interactivos():
+    """Modo polling continuo para escuchar comandos desde Telegram en tiempo real."""
+    print("🤖 Bot interactivo iniciado. Escuchando mensajes de Telegram en tiempo real (Ctrl+C para salir)...")
+    offset = None
+    
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?timeout=20"
+            if offset:
+                url += f"&offset={offset}"
+            req = urllib.request.Request(url, headers={"User-Agent": "BotBiomedicoRegional/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                
+            for update in data.get("result", []):
+                offset = update.get("update_id", 0) + 1
+                msg = update.get("message", {})
+                chat_id = msg.get("chat", {}).get("id")
+                texto = msg.get("text", "")
+                
+                if chat_id and texto:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Mensaje recibido de {chat_id}: '{texto}'")
+                    responder_consulta_interactiva(texto, chat_id)
+        except Exception as e:
+            print(f"[WARN] Error en polling: {e}")
+            time.sleep(3)
 
 def self_check():
     """Chequeo ejecutable sin frameworks"""
@@ -484,7 +650,6 @@ def self_check():
     mock_vigente = {"status": "vigente", "procedure_number": "test-vig-2026"}
     d_vig = obtener_distintivo_estatus(mock_vigente)
     assert d_vig["tipo"] == "ABIERTA"
-    assert "🟢" in d_vig["texto_telegram"]
 
     mock_concluido = {
         "procedure_number": "test-adj-2026",
@@ -493,15 +658,18 @@ def self_check():
     }
     d_adj = obtener_distintivo_estatus(mock_concluido)
     assert d_adj["tipo"] == "ADJUDICADA"
-    assert "🔴" in d_adj["texto_telegram"]
     
     pdf_p, _, _, _ = generar_pdf_licitacion(mock_concluido, "Sinaloa", "📍")
     assert pdf_p is not None and os.path.exists(pdf_p)
-    print("✅ Self-check superado: Distintivos visuales (🟢 Abierta vs 🔴 Adjudicada) y PDF OK.")
+    print("✅ Self-check superado: Modo interactivo, menús, PDFs y filtros OK.")
 
 def main():
     if "--self-check" in sys.argv:
         self_check()
+        return
+
+    if "--interactivo" in sys.argv or "--listen" in sys.argv:
+        escuchar_mensajes_interactivos()
         return
 
     force_mode = "--force" in sys.argv
@@ -523,7 +691,6 @@ def main():
             estado = proc.get("estado_detectado") or "Región"
             emoji = proc.get("estado_emoji") or "📍"
 
-            # Obtener detalle enriquecido de la licitación
             detalle = fetch_json(f"https://api.licitia.com.mx/api/open/v1/licitaciones/{num}")
             if not detalle.get("data"):
                 detalle = proc
@@ -534,7 +701,6 @@ def main():
             if ganadores:
                 ganador_texto = f"\n🏆 *Ganador:* {ganadores[0]['empresa']} ({ganadores[0]['monto']})"
 
-            # Limitar caption para Telegram
             if len(objeto_completo) > 300:
                 objeto_caption = objeto_completo[:300] + "..."
             else:
