@@ -14,7 +14,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 # Configuración por variables de entorno con fallback
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8506045479:AAENIrk96tSSXYFRIhFtuZbwrHxzdnHmk-U")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8325404080:AAEkN_Hrhr55pPEdM5ZDJi6I-AL_SmYjk8w")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1344870675")
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "notified_ids.json")
 PDF_DIR = os.path.join(os.path.dirname(__file__), "fichas_pdf")
